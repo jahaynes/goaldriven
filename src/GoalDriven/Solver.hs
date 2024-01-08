@@ -1,41 +1,48 @@
-module GoalDriven.Solver where
+module GoalDriven.Solver (solve) where
 
 import GoalDriven.Solver.Types
 
-import           Data.Heap      (Entry (..), Heap)
+import           Data.Heap      (Entry (..))
 import qualified Data.Heap as H
-import           Data.Set       (Set, (\\))
-import qualified Data.Set as S
+import           Data.Maybe     (mapMaybe)
 
-solve :: forall g m. (MonadFail m, Ord g) => Int -> Set g -> [Step g] -> m [Step g]
-solve maxDepth goals available = go 0 (H.singleton (Entry 0 mempty))
+solve :: forall s m. MonadFail m => s -> (s -> Bool) -> Int -> [Step s] -> m [Step s]
+solve initial solved maxCost available = go (H.singleton (Entry 0 (Path mempty)))
 
     where
-    go :: MonadFail m => Int -> Heap (Entry Int (Path g)) -> m [Step g]
-    go depth paths
-        | depth > maxDepth = fail "Too many steps"
-        | otherwise =
-            case H.viewMin paths of
-                Nothing -> fail "Impossible"
-                Just (Entry cost path, heap')
-                    | solved path -> let Path p = path in pure . reverse $ map snd p
-                    | otherwise -> go (depth + 1)
-                                 . foldr (H.insert . Entry (cost + 1)) heap'
-                                 . fanOut
-                                 $ path
+    go paths =
 
-    solved :: Path g -> Bool
-    solved (Path                 []) = null goals
-    solved (Path ((Achieved a,_):_)) = goals `S.isSubsetOf` a
+        case H.viewMin paths of
 
-    fanOut :: Path g -> [Path g]
-    fanOut (Path []) = map (\s -> Path [(provideAndInvalidate mempty s, s)])
-                     . filter (null . requires)
-                     $ available
+            Nothing ->
+                fail "No solution found"
 
-    fanOut (Path (p@(a@(Achieved ach), _):ps)) = map (\s -> Path ((provideAndInvalidate a s, s):p:ps))
-                                               . filter (\s -> requires s `S.isSubsetOf` ach)
-                                               $ available
+            Just (Entry cost path, heap') ->
 
-    provideAndInvalidate :: Ord g => Achieved g -> Step g -> Achieved g
-    provideAndInvalidate (Achieved a) s = Achieved ((a <> provides s) \\ invalidates s)
+                let state = getCurrentState path
+
+                in if solved state
+
+                       then let Path p = path in pure . reverse $ map snd p
+
+                       else go
+                          . foldr H.insert heap'
+                          . filter (\(Entry c _) -> c <= maxCost)
+                          . map (Entry (cost+1) . addToPath path)
+                          . mapMaybe (fanOut state)
+                          $ available
+
+    addToPath :: Path s -> (s, Step s) -> Path s
+    addToPath (Path path) next = Path (next:path)
+
+    getCurrentState :: Path s -> s
+    getCurrentState (Path        []) = initial
+    getCurrentState (Path ((s,_):_)) = s
+
+    fanOut :: s -> Step s -> Maybe (s, Step s)
+    fanOut state step
+        | requires step state =
+            case provides step state of
+                Nothing     -> Nothing
+                Just state' -> Just (state', step)
+        | otherwise = Nothing
